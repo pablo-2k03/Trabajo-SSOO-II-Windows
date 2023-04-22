@@ -6,6 +6,12 @@ typedef int(*tipoLomo_Inicio)(int, int, char const*, char const*);
 typedef int(*tipoLomo_Generar_Mapa)(char const*, char const*);
 int comprobarPrimerArgumento(char* argv);
 int comprobarSegundoArgumento(char* argv);
+BOOL WINAPI manejadora(DWORD param);
+#define MAX_NTRENES 100 //por ejemplo
+ struct {
+    int nTrenes;
+    HANDLE hTrenes[MAX_NTRENES];
+}recursosIPCS;
 
 int main(int argc, char* argv[])
 {
@@ -16,14 +22,15 @@ int main(int argc, char* argv[])
     }
     HINSTANCE libreria = LoadLibrary(TEXT("lomo2.dll"));
     if (libreria == NULL) {
-        fprintf(stderr,"La biblioteca no se ha cargado.\n");
+        fprintf(stderr, "La biblioteca no se ha cargado.\n");
         return -2;
     }
     else {
         if (argc == 2 && !strcmp(argv[1], "--mapa")) {
             tipoLomo_Generar_Mapa puntLomoGenerarMapa;
             if ((puntLomoGenerarMapa = (tipoLomo_Generar_Mapa)GetProcAddress(libreria, "LOMO_generar_mapa")) == NULL) {
-                fprintf(stderr,"No se ha podido generar el mapa.\n");
+                fprintf(stderr, "No se ha podido generar el mapa.\n");
+                return -3;
             }
             else {
                 puntLomoGenerarMapa("i0959394", "i0919297");
@@ -32,6 +39,11 @@ int main(int argc, char* argv[])
             }
         }
         if (comprobarPrimerArgumento(argv[1]) != -1 && comprobarSegundoArgumento(argv[2]) != -1) {
+            recursosIPCS.nTrenes = atoi(argv[1]);
+            if (!SetConsoleCtrlHandler((PHANDLER_ROUTINE)manejadora, TRUE)) {
+                fprintf(stderr, "Error en la funcion manejadora.\n");
+            }
+            //TODO CODE
             tipoLomo_Inicio puntInicioLomo;
             if ((puntInicioLomo = (tipoLomo_Inicio)GetProcAddress(libreria, "LOMO_inicio")) == NULL) {
                 printf("Error en LOMO_inicio.\n");
@@ -61,4 +73,16 @@ int comprobarSegundoArgumento(char* argv) {
         return -1;
 
     return atoi(argv);
+}
+
+BOOL WINAPI manejadora(DWORD param) {
+    switch (param) {
+    case CTRL_C_EVENT:
+        WaitForMultipleObjects(recursosIPCS.nTrenes,recursosIPCS.hTrenes,true,INFINITE);
+        //Demas CloseThreads y eliminar cola de mensajes.
+        return TRUE;
+    default:
+        return FALSE;
+    }
+
 }
