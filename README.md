@@ -1,1 +1,0 @@
-# Trabajo SSOO-II Windows

@@ -207,8 +207,8 @@ BOOL WINAPI manejadora(DWORD param) {
 }
 DWORD WINAPI receiveThreadMessage(LPVOID param) {
     MSG msg;
-    PeekMessage(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE);
-    GetMessage(&msg, NULL, 0, 0);
+    PeekMessage(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE); // cola de mensajes.
+    GetMessage(&msg, NULL, 0, 0); // leer mensaje.
     printf("%d\n", msg.wParam);
     return 1;
 }
