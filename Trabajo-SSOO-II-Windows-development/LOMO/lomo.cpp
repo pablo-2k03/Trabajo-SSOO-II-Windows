@@ -12,7 +12,7 @@ typedef int(*tipoLomo_Generar_Mapa)(char const*, char const*);
 typedef int(*tipoLomo_TrenNuevo)(void);
 typedef int(*tipoLomo_PeticionAvance)(int nuevoTren, int* xcab, int* ycab);
 typedef int(*tipoLomo_Avance)(int nt, int* xcola, int* ycola);
-typedef char(*tipoLomo_GetColor)(int nt);
+typedef char*(*tipoLomo_GetColor)(int nt);
 typedef void(*tipoLomo_LomoEspera)(int y, int yn);
 typedef int(*tipoLomo_LomoFin)(void);
 typedef void(*tipoLomo_ponError)(char* mensaje);
@@ -29,6 +29,7 @@ struct {
     int nTrenes;
     int tamMax;
     HANDLE hTrenes[MAX_NTRENES];
+    int idTrenes[MAX_NTRENES];
     int casillas[75][17];
     HANDLE hMutex;
 }recursosIPCS;
@@ -98,6 +99,7 @@ int main(int argc, char* argv[]) {
             LPDWORD l;
             for (i = 0; i < recursosIPCS.nTrenes; i++) {
                 recursosIPCS.hTrenes[i] = CreateThread(NULL, 0, receiveThreadMessage, (LPVOID)i, 0, (LPDWORD)&l);
+                recursosIPCS.idTrenes[i] = i;
                 if (recursosIPCS.hTrenes[i] == NULL) {
                     fprintf(stderr, "Error al obtener el HANDLE de los hilos.\n");
                     return -5;
@@ -152,6 +154,7 @@ BOOL WINAPI manejadora(DWORD param) {
     }
 }
 DWORD WINAPI   receiveThreadMessage(LPVOID param) {
+    int estaInterbloqueado = 0;
     //Sincronizacion y movimiento de trenes.
     int i = (int)param;
     tipoLomo_TrenNuevo puntLomoTrenNuevo;
@@ -168,6 +171,7 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
     tipoLomo_PeticionAvance punteroPeticionAvance;
     tipoLomo_Avance punteroAvance;
     tipoLomo_LomoEspera punteroEspera;
+    tipoLomo_GetColor punteroColor;
     int xCab, yCab;
     int xCola=0, yCola;
     int posAnterior;
@@ -212,6 +216,16 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
             //Desocupas la casilla anterior.
             recursosIPCS.casillas[xCola][yCola] = 0;
             ReleaseMutex(recursosIPCS.hMutex);
+            estaInterbloqueado = 1;
+            if (estaInterbloqueado) {
+                punteroColor = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
+                if (punteroColor == NULL) {
+                    return 1;
+                }
+                char* color = punteroColor(id);
+                fprintf(stderr, " %s ", color);
+            }
+             
         }
         else {
             //Si esta ocupada, esperas.
@@ -222,6 +236,15 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
             }
             //coordenada y e y de la siguiente.
             punteroEspera(posAnterior, yCab);
+            
+            if (estaInterbloqueado) {
+                 punteroColor = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
+                 if (punteroColor == NULL) {
+                     return 1;
+                 }
+                 char* color = punteroColor(id);
+                 fprintf(stderr, "%s\t", color);
+            }
         }
 
     }
