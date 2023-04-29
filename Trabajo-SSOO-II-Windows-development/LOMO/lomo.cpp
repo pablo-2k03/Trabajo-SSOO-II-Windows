@@ -122,6 +122,12 @@ int main(int argc, char* argv[]) {
                 }
             }
             WaitForMultipleObjects(recursosIPCS.nTrenes, recursosIPCS.hTrenes, true, INFINITE);
+            UnmapViewOfFile(pointer);
+            CloseHandle(hFileMap);
+            FreeLibrary(recursosIPCS.libreria);
+            CloseHandle(recursosIPCS.hMutex);
+            for(int i = 0; i< recursosIPCS.nTrenes; i++)
+                CloseHandle(recursosIPCS.hTrenes[i]);
             return 0;
         }
         else {
