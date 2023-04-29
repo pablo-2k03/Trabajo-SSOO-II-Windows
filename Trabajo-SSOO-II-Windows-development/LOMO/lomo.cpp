@@ -132,6 +132,7 @@ int main(int argc, char* argv[]) {
         }
         else {
             fprintf(stderr, "Introduzca unos argumentos validos.\n");
+            FreeLibrary(recursosIPCS.libreria);
             return -1;
         }
     }
