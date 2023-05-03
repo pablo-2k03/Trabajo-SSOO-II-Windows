@@ -23,13 +23,14 @@ int comprobarSegundoArgumento(char* argv);
 int comprobarTercerArgumento(char* argv);
 BOOL WINAPI manejadora(DWORD param);
 DWORD WINAPI receiveThreadMessage(LPVOID param);
-
 struct {
     HINSTANCE libreria;
     int nTrenes;
     int tamMax;
     HANDLE hTrenes[MAX_NTRENES];
     int idTrenes[MAX_NTRENES];
+    char* colorTrenes[MAX_NTRENES];
+    int hayInterbloqueo;
     HANDLE hMutex;
     int matrix[75][17];
 }recursosIPCS;
@@ -122,12 +123,15 @@ int main(int argc, char* argv[]) {
                 }
             }
             WaitForMultipleObjects(recursosIPCS.nTrenes, recursosIPCS.hTrenes, true, INFINITE);
+            if (recursosIPCS.hayInterbloqueo) {
+                printf("INTERBLOQUEO: ");
+                for (int i = 0; i < recursosIPCS.nTrenes; i++) {
+                    printf(" %s ", recursosIPCS.colorTrenes[i]);
+                }
+            }
             UnmapViewOfFile(pointer);
             CloseHandle(hFileMap);
             FreeLibrary(recursosIPCS.libreria);
-            CloseHandle(recursosIPCS.hMutex);
-            for(int i = 0; i< recursosIPCS.nTrenes; i++)
-                CloseHandle(recursosIPCS.hTrenes[i]);
             return 0;
         }
         else {
@@ -181,7 +185,6 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
     int* punteroMem = (int*)param;
     int estaInterbloqueado = 0;
     //Sincronizacion y movimiento de trenes.
-    int i = (int)param;
     tipoLomo_TrenNuevo puntLomoTrenNuevo;
     int id;
     if ((puntLomoTrenNuevo = (tipoLomo_TrenNuevo)GetProcAddress(recursosIPCS.libreria, "LOMO_trenNuevo")) == NULL) {
@@ -205,6 +208,7 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
     TCHAR mutexName[] = TEXT("Mutex");
     int casillaOcupada = 1;
     int casillaLibre = 0;
+    int cont = 0;
     while (time(NULL) < end_time) {
         
         punteroPeticionAvance = (tipoLomo_PeticionAvance)GetProcAddress(recursosIPCS.libreria, "LOMO_peticiOnAvance");
@@ -218,7 +222,7 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
 
         //Compruebas que la posicion de la matriz de memoria compartida no esta ocupada.
         if (*(punteroMem + xCab * 17 + yCab) == 0) {
-            
+            cont = 0;
             //Si no esta ocupada, la ocupas.
             OpenMutex(1, true, mutexName);
             CopyMemory(punteroMem + xCab * 17 + yCab, &casillaOcupada, sizeof(int));
@@ -260,13 +264,16 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
             }
             //coordenada y e y de la siguiente.
             punteroEspera(posAnterior, yCab);
-            if (estaInterbloqueado) {
-                 punteroColor = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
-                 if (punteroColor == NULL) {
-                     return 1;
-                 }
-                 char* color = punteroColor(id);
-                 fprintf(stderr, "%s\t", color);
+            
+            cont++;
+            if (cont == recursosIPCS.nTrenes * recursosIPCS.tamMax) {
+                tipoLomo_GetColor puntColor = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
+                if (puntColor == NULL) {
+                    return -1;
+                }
+                recursosIPCS.colorTrenes[id] = puntColor(id);
+                recursosIPCS.hayInterbloqueo = 1;
+                return 1;
             }
         }
 
