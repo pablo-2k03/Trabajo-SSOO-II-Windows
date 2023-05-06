@@ -4,7 +4,6 @@
 #include "lomo2.h"
 #include <time.h>
 #include <thread>
-#define DEBUG
 #define MAX_NTRENES 100
 //Punteros a funciones de la biblioteca de enlazado dinamico.
 typedef int(*tipoLomo_Inicio)(int, int, char const*, char const*);
@@ -28,11 +27,13 @@ struct {
     int nTrenes;
     int tamMax;
     HANDLE hTrenes[MAX_NTRENES];
-    int idTrenes[MAX_NTRENES];
-    char* colorTrenes[MAX_NTRENES];
-    int hayInterbloqueo;
     HANDLE hMutex;
-    int matrix[75][17];
+    int matrix[75][17]; // solo para hacer sizeof en las funciones.
+    int nTrenesHanSalido;
+    char* colorTrenes[MAX_NTRENES];
+    HANDLE eventoFin;
+    HANDLE hFileMap;
+    boolean mensajePuesto;
 }recursosIPCS;
 
 typedef struct {
@@ -70,13 +71,13 @@ int main(int argc, char* argv[]) {
         if (comprobarPrimerArgumento(argv[1]) != -1 && comprobarSegundoArgumento(argv[2]) != -1 && comprobarTercerArgumento(argv[3]) != -1) {
             //Creacion del mapa de memoria compartida.
             TCHAR memNombre[] = TEXT("MemoriaCompartida");
-            HANDLE hFileMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(recursosIPCS.matrix), memNombre);
-            if (hFileMap == NULL) {
+            recursosIPCS.hFileMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(recursosIPCS.matrix), memNombre);
+            if (recursosIPCS.hFileMap == NULL) {
                 fprintf(stderr, "Error en la creacion de la memoria mapeada.\n");
                 return -1;
             }
             //Creación de la matriz de 75 filas y 17 columnas en memoria compartida.
-            int* pointer = (int*)MapViewOfFile(hFileMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(recursosIPCS.matrix));
+            int* pointer = (int*)MapViewOfFile(recursosIPCS.hFileMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(recursosIPCS.matrix));
             if (pointer == NULL) {
                 fprintf(stderr, "Error en la creacion de la matriz.\n");
                 return -1;
@@ -102,6 +103,10 @@ int main(int argc, char* argv[]) {
             }
             TCHAR mutexName[] = TEXT("Mutex");
             recursosIPCS.hMutex = CreateMutex(NULL, true, mutexName);
+            if (recursosIPCS.hMutex == NULL) {
+                fprintf(stderr, "Error en la creacion del mutex.\n");
+                return -100;
+            }
             tipoLomo_Inicio puntInicioLomo;
             if ((puntInicioLomo = (tipoLomo_Inicio)GetProcAddress(recursosIPCS.libreria, "LOMO_inicio")) == NULL) {
                 printf("Error obteniendo el puntero de LOMO_inicio.\n");
@@ -116,22 +121,18 @@ int main(int argc, char* argv[]) {
             LPDWORD l;
             for (i = 0; i < recursosIPCS.nTrenes; i++) {
                 recursosIPCS.hTrenes[i] = CreateThread(NULL, 0, receiveThreadMessage, (LPVOID)pointer, 0, (LPDWORD)&l);
-                recursosIPCS.idTrenes[i] = i;
                 if (recursosIPCS.hTrenes[i] == NULL) {
                     fprintf(stderr, "Error al obtener el HANDLE de los hilos.\n");
                     return -5;
                 }
             }
-            WaitForMultipleObjects(recursosIPCS.nTrenes, recursosIPCS.hTrenes, true, INFINITE);
-            if (recursosIPCS.hayInterbloqueo) {
-                printf("INTERBLOQUEO: ");
-                for (int i = 0; i < recursosIPCS.nTrenes; i++) {
-                    printf(" %s ", recursosIPCS.colorTrenes[i]);
-                }
+            
+            recursosIPCS.eventoFin = CreateEvent(NULL, false, false, "ControladorFin");
+            if (!recursosIPCS.eventoFin) {
+                fprintf(stderr, "Error al crear el evento de finalización del programa.\n");
+                return -200;
             }
-            UnmapViewOfFile(pointer);
-            CloseHandle(hFileMap);
-            FreeLibrary(recursosIPCS.libreria);
+            WaitForSingleObject(recursosIPCS.eventoFin,INFINITE);     
             return 0;
         }
         else {
@@ -175,15 +176,17 @@ int comprobarTercerArgumento(char* argv) {
 BOOL WINAPI manejadora(DWORD param) {
     switch (param) {
     case CTRL_C_EVENT:
-        exit(0);
+        CloseHandle(recursosIPCS.hFileMap);
+        FreeLibrary(recursosIPCS.libreria);
     default:
         return FALSE;
     }
 }
 DWORD WINAPI   receiveThreadMessage(LPVOID param) {
-
+    
     int* punteroMem = (int*)param;
     int estaInterbloqueado = 0;
+    recursosIPCS.nTrenesHanSalido = 0;
     //Sincronizacion y movimiento de trenes.
     tipoLomo_TrenNuevo puntLomoTrenNuevo;
     int id;
@@ -196,8 +199,7 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
         fprintf(stderr, "Error en lomo tren nuevo.\n");
         return -4;
     }
-    tipoLomo_PeticionAvance punteroPeticionAvance;
-    tipoLomo_Avance punteroAvance;
+     
     tipoLomo_LomoEspera punteroEspera;
     int xCab, yCab;
     int xCola=0, yCola;
@@ -207,75 +209,108 @@ DWORD WINAPI   receiveThreadMessage(LPVOID param) {
     TCHAR mutexName[] = TEXT("Mutex");
     int casillaOcupada = 1;
     int casillaLibre = 0;
-    int cont = 0;
+    boolean estaEnVia = false;
+    tipoLomo_PeticionAvance punteroPeticionAvance = (tipoLomo_PeticionAvance)GetProcAddress(recursosIPCS.libreria, "LOMO_peticiOnAvance");
+    if (punteroPeticionAvance == NULL) {
+        printf("Error obteniendo el puntero de LOMO_peticionAvance.\n");
+        return -3;
+    }
+    tipoLomo_Avance punteroAvance = (tipoLomo_Avance)GetProcAddress(recursosIPCS.libreria, "LOMO_avance");
+    if (punteroAvance == NULL) {
+        ReleaseMutex(recursosIPCS.hMutex);
+        printf("Error obteniendo el puntero de LOMO_avance.\n");
+        return -3;
+    }
+    punteroEspera = (tipoLomo_LomoEspera)GetProcAddress(recursosIPCS.libreria, "LOMO_espera");
+    if (punteroEspera == NULL) {
+        printf("Error obteniendo el puntero de LOMO_espera.\n");
+        ReleaseMutex(recursosIPCS.hMutex);
+        return -3;
+    }
+    tipoLomo_ponError pError = (tipoLomo_ponError)GetProcAddress(recursosIPCS.libreria, "pon_error");
+    if (pError == NULL) {
+        return -1;
+    }
+    tipoLomo_GetColor color = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
+    if (color == NULL) {
+        return -1;
+    }
+    recursosIPCS.hMutex = OpenMutex(1, true, mutexName);
+    if (recursosIPCS.hMutex == NULL) {
+        fprintf(stderr, "Error al abrir el mutex.\n");
+        return -10;
+    }
+    int contador = 100;
     while (time(NULL) < end_time) {
-        
-        punteroPeticionAvance = (tipoLomo_PeticionAvance)GetProcAddress(recursosIPCS.libreria, "LOMO_peticiOnAvance");
-        if (punteroPeticionAvance == NULL) {
-            printf("Error obteniendo el puntero de LOMO_peticionAvance.\n");
-            return -3;
-        }
+
+        WaitForSingleObject(recursosIPCS.hMutex, INFINITE);
+
+        //Pides el avance del tren.
+
         punteroPeticionAvance(id, &xCab, &yCab);
         posAnterior = yCab;
-        
 
         //Compruebas que la posicion de la matriz de memoria compartida no esta ocupada.
-        if (*(punteroMem + xCab * 17 + yCab) == 0) {
-            cont = 0;
+
+        if (*(punteroMem + xCab * 17 + yCab) == 0) { 
+            contador = 100;
+            recursosIPCS.colorTrenes[id] = NULL;         
             //Si no esta ocupada, la ocupas.
-            OpenMutex(1, true, mutexName);
             CopyMemory(punteroMem + xCab * 17 + yCab, &casillaOcupada, sizeof(int));
-            ReleaseMutex(recursosIPCS.hMutex);
-            //Avanzas.
-            punteroAvance = (tipoLomo_Avance)GetProcAddress(recursosIPCS.libreria, "LOMO_avance");
-            if (punteroAvance == NULL) {
-                ReleaseMutex(recursosIPCS.hMutex);
-                printf("Error obteniendo el puntero de LOMO_avance.\n");
-                return -3;
-            }
             
+            //Avanzas. 
             punteroAvance(id, &xCola, &yCola);
-            //Si esta ocupada, esperas.
-            punteroEspera = (tipoLomo_LomoEspera)GetProcAddress(recursosIPCS.libreria, "LOMO_espera");
-            if (punteroEspera == NULL) {
-                printf("Error obteniendo el puntero de LOMO_espera.\n");
-                ReleaseMutex(recursosIPCS.hMutex);
-                return -3;
-            }
+            
             //coordenada y e y de la siguiente.
             punteroEspera(posAnterior, yCab);
 
             
-            //Desocupas la casilla anterior liberando la cola del tren.
-            if (xCola >= 0 && yCola >= 0) {
-                OpenMutex(1, true, mutexName);
-                CopyMemory(punteroMem + xCola * 17 + yCola, &casillaLibre, sizeof(int));
+            //Desocupas la casilla anterior liberando la cola del tren y compruebas si el tren está en via.
+            if (xCola >= 0 && yCola >= 0) {   
+                if (!estaEnVia) {
+                    estaEnVia = true;     
+                    recursosIPCS.nTrenesHanSalido++;  
+                }              
+                CopyMemory(punteroMem + xCola * 17 + yCola, &casillaLibre, sizeof(int)); 
                 ReleaseMutex(recursosIPCS.hMutex);
-            }
-             
+            }        
         }
         else {
-            //Si esta ocupada, esperas.
-            punteroEspera = (tipoLomo_LomoEspera)GetProcAddress(recursosIPCS.libreria, "LOMO_espera");
-            if (punteroEspera == NULL) {
-                printf("Error obteniendo el puntero de LOMO_espera.\n");
-                return -3;
-            }
             //coordenada y e y de la siguiente.
             punteroEspera(posAnterior, yCab);
-            
-            cont++;
-            if (cont == recursosIPCS.nTrenes * recursosIPCS.tamMax) {
-                tipoLomo_GetColor puntColor = (tipoLomo_GetColor)GetProcAddress(recursosIPCS.libreria, "LOMO_getColor");
-                if (puntColor == NULL) {
-                    return -1;
+            if (estaEnVia) {
+                contador--;
+                //Intentamos adelantarnos al interbloqueo para que de tiempo a escribir el color del proceso en el array.
+                if (contador == ((recursosIPCS.nTrenesHanSalido*recursosIPCS.tamMax)/ 2)) {
+                    recursosIPCS.colorTrenes[id] = color(id);
                 }
-                recursosIPCS.colorTrenes[id] = puntColor(id);
-                recursosIPCS.hayInterbloqueo = 1;
-                return 1;
+                //Si el contador se decrementa hasta el final, hay interbloqueo.
+                else if (contador == 0) {
+                    tipoLomo_ponError pError = (tipoLomo_ponError)GetProcAddress(recursosIPCS.libreria, "pon_error");
+                    if (pError == NULL) {
+                        return -1;
+                    }
+                    //Comprobación para que solo se ponga el mensaje de INTERBLOQUEO una vez (sino seria 1 por hilo)
+                    if (!recursosIPCS.mensajePuesto) {
+                        char mensaje[1024] = "INTERBLOQUEO: ";
+                        //Concatenamos INTERBLOQUEO: con los colores de los trenes.
+                        for (int i = 0; i < recursosIPCS.nTrenes; i++) {
+                            if (recursosIPCS.colorTrenes[i] != NULL) {
+                                snprintf(mensaje, sizeof(mensaje), "%s %s", mensaje, recursosIPCS.colorTrenes[i]);
+                            }
+                        }
+                        pError(mensaje);
+                        recursosIPCS.mensajePuesto = true;
+                    }
+                    UnmapViewOfFile(punteroMem);
+                    CloseHandle(recursosIPCS.hFileMap);
+                    FreeLibrary(recursosIPCS.libreria);
+                    PulseEvent(recursosIPCS.eventoFin);
+                }     
             }
+            ReleaseMutex(recursosIPCS.hMutex);
         }
-
+       
     }
-    return 1;
+    PulseEvent(recursosIPCS.eventoFin);
 }
